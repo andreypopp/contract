@@ -714,7 +714,7 @@ class ForwardC(Contract):
         return r
 
 
-class GuardValidationError(Exception):
+class GuardValidationError(TypeError):
     
     """
     Raised when guarded function gets invalid arguments,
