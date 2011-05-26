@@ -1,0 +1,28 @@
+Some ideas
+==========
+
+  * Get rid of "C" suffix -- ``Int``, ``Dict``, ``String`` and etc.
+
+  * Define ``Nullable(Contract)`` as alias to ``Or(Null, Contract)``.
+
+  * Define ``Contract`` as::
+
+      class Contract:
+        def check(self, value, context=None):
+            pass
+
+    where ``context`` is anything we want. Now we can define contracts that
+    depends on context, for example::
+
+      class UniqueItemInDatabase:
+        def __init__(self, contract):
+          self.contract = contract
+
+        def check(self, value, db=None):
+          if not db:
+            raise ContractValidationError("can't verify uniqueness")
+          if db.exists(value):
+            raise ContractValidationError("not unique %s")
+
+  * Define all contracts in term of functions -- ``Contract`` class is really
+    ambigious here.
