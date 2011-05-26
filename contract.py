@@ -17,14 +17,24 @@ __all__ = ("ContractValidationError", "Contract", "AnyC", "IntC", "StringC",
 class ContractValidationError(Exception):
     
     """
-    Basic contract validation error
+    Contract validation error
     """
     
-    def __init__(self, msg, name=None):
-        message = msg if not name else "%s: %s" % (name, msg)
-        super(ContractValidationError, self).__init__(message)
+    def __init__(self, msg, name=None, errors=None):
         self.msg = msg
         self.name = name
+        self.errors = errors
+        super(ContractValidationError, self).__init__(self.formatted)
+
+    @property
+    def formatted(self):
+        message = self.msg
+        if self.name:
+            message = "%s: %s" % (self.name, message)
+        if self.errors:
+            message = "%s: %s" % (message, [x.args[0] for x in self.errors])
+        return message
+
 
 
 class ContractMeta(type):
@@ -407,17 +417,17 @@ class ListC(Contract):
     >>> ListC(IntC).check([1, 2, 3.0])
     Traceback (most recent call last):
     ...
-    ContractValidationError: 2: value is not int
+    ContractValidationError: can't validate: ['2: value is not int']
     >>> ListC(IntC, min_length=1).check([1, 2, 3])
     >>> ListC(IntC, min_length=1).check([])
     Traceback (most recent call last):
     ...
-    ContractValidationError: list length is less than 1
+    ContractValidationError: can't validate: ['list length is less than 1']
     >>> ListC(IntC, max_length=2).check([1, 2])
     >>> ListC(IntC, max_length=2).check([1, 2, 3])
     Traceback (most recent call last):
     ...
-    ContractValidationError: list length is greater than 2
+    ContractValidationError: can't validate: ['list length is greater than 2']
     """
     
     __metaclass__ = SquareBracketsMeta
@@ -430,16 +440,22 @@ class ListC(Contract):
     def check(self, value):
         if not isinstance(value, list):
             self._failure("value is not list")
+        errors = []
         if len(value) < self.min_length:
-            self._failure("list length is less than %s" % self.min_length)
+            errors.append(ContractValidationError(
+                "list length is less than %s" % self.min_length))
         if self.max_length is not None and len(value) > self.max_length:
-            self._failure("list length is greater than %s" % self.max_length)
+            errors.append(ContractValidationError(
+                "list length is greater than %s" % self.max_length))
         for index, item in enumerate(value):
             try:
                 self.contract.check(item)
             except ContractValidationError as err:
                 name = "%i.%s" % (index, err.name) if err.name else str(index)
-                raise ContractValidationError(err.msg, name)
+                errors.append(ContractValidationError(err.msg, name))
+
+        if errors:
+            raise ContractValidationError("can't validate", errors=errors)
     
     def __repr__(self):
         r = "<ListC("
@@ -464,15 +480,15 @@ class DictC(Contract):
     >>> contract.check({"foo": 1, "bar": 2})
     Traceback (most recent call last):
     ...
-    ContractValidationError: bar: value is not string
+    ContractValidationError: can't validate: ['bar: value is not string']
     >>> contract.check({"foo": 1})
     Traceback (most recent call last):
     ...
-    ContractValidationError: bar is required
+    ContractValidationError: can't validate: ['bar is required']
     >>> contract.check({"foo": 1, "bar": "spam", "eggs": None})
     Traceback (most recent call last):
     ...
-    ContractValidationError: eggs is not allowed key
+    ContractValidationError: can't validate: ['eggs is not allowed']
     >>> contract.allow_extra("eggs")
     <DictC(extras=(eggs) | bar=<StringC>, foo=<IntC>)>
     >>> contract.check({"foo": 1, "bar": "spam", "eggs": None})
@@ -480,7 +496,7 @@ class DictC(Contract):
     >>> contract.check({"foo": 1, "bar": "spam", "ham": 100})
     Traceback (most recent call last):
     ...
-    ContractValidationError: ham is not allowed key
+    ContractValidationError: can't validate: ['ham is not allowed']
     >>> contract.allow_extra("*")
     <DictC(any, extras=(eggs) | bar=<StringC>, foo=<IntC>)>
     >>> contract.check({"foo": 1, "bar": "spam", "ham": 100})
@@ -488,18 +504,21 @@ class DictC(Contract):
     >>> contract.check({"foo": 1, "ham": 100, "baz": None})
     Traceback (most recent call last):
     ...
-    ContractValidationError: bar is required
+    ContractValidationError: can't validate: ['bar is required']
     >>> contract.allow_optionals("bar")
     <DictC(any, extras=(eggs), optionals=(bar) | bar=<StringC>, foo=<IntC>)>
     >>> contract.check({"foo": 1, "ham": 100, "baz": None})
     >>> contract.check({"bar": 1, "ham": 100, "baz": None})
+    ...     # doctest: +NORMALIZE_WHITESPACE
     Traceback (most recent call last):
     ...
-    ContractValidationError: foo is required
+    ContractValidationError: can't validate: 
+        ['foo is required', 
+         'bar: value is not string']
     >>> contract.check({"foo": 1, "bar": 1, "ham": 100, "baz": None})
     Traceback (most recent call last):
     ...
-    ContractValidationError: bar: value is not string
+    ContractValidationError: can't validate: ['bar: value is not string']
     """
     
     def __init__(self, **contracts):
@@ -529,24 +548,34 @@ class DictC(Contract):
     def check(self, value):
         if not isinstance(value, dict):
             self._failure("value is not dict")
-        self.check_presence(value)
-        map(self.check_item, value.items())
+        presence_errors = self.check_presence(value)
+        item_errors = [x for y in map(self.check_item,value.items()) for x in y]
+        if presence_errors or item_errors:
+            raise ContractValidationError(
+                    "can't validate", 
+                    errors=presence_errors + item_errors)
     
     def check_presence(self, value):
+        errors = []
         for key in self.contracts:
             if key not in self.optionals and key not in value:
-                self._failure("%s is required" % key)
+                errors.append(ContractValidationError("%s is required" % key))
+        return errors
     
     def check_item(self, item):
+        errors = []
+
         key, value = item
         if key in self.contracts:
             try:
                 self.contracts[key].check(value)
             except ContractValidationError as err:
                 name = "%s.%s" % (key, err.name) if err.name else key
-                raise ContractValidationError(err.msg, name)
+                errors.append(ContractValidationError(err.msg, name))
         elif not self.allow_any and key not in self.extras:
-            self._failure("%s is not allowed key" % key)
+            errors.append(ContractValidationError("%s is not allowed" % key))
+
+        return errors
     
     def __repr__(self):
         r = "<DictC("
@@ -657,7 +686,7 @@ class ForwardC(Contract):
     >>> nodeC.check({"name": "foo", "children": [1]})
     Traceback (most recent call last):
     ...
-    ContractValidationError: children.0: value is not dict
+    ContractValidationError: can't validate: ["children: can't validate"]
     >>> nodeC.check({"name": "foo", "children": [ \
                         {"name": "bar", "children": []} \
                      ]})
